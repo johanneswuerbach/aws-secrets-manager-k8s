@@ -1,0 +1,3 @@
+version: "1"
+domain: johanneswuerbach.net
+repo: github.com/johanneswuerbach/aws-secrets-manager-k8s
