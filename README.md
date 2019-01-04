@@ -1,4 +1,4 @@
-# aws-secrets-manager-k8s
+# aws-secrets-manager-k8s [![CircleCI](https://circleci.com/gh/johanneswuerbach/aws-secrets-manager-k8s.svg?style=svg)](https://circleci.com/gh/johanneswuerbach/aws-secrets-manager-k8s)
 
 Sync [AWS Secrets Manager](https://aws.amazon.com/secrets-manager/) secrets into a Kubernetes
 cluster.
