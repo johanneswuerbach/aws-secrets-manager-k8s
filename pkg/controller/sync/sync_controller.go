@@ -17,8 +17,6 @@ package sync
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -31,7 +29,6 @@ import (
 	batchv1beta1 "k8s.io/api/batch/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -308,8 +305,7 @@ func (r *ReconcileSync) updateDeployments(ctx context.Context, fetchedSecrets ma
 		}
 
 		for _, deployment := range deployments.Items {
-			if changed := maybeUpdatePodSpec(&deployment.Spec.Template.Spec, secrets); changed {
-				fmt.Print("\n", "UPDATE!")
+			if changed := maybeUpdatePodTemplate(&deployment.Spec.Template, secrets); changed {
 
 				// TODO: Use https://github.com/kubernetes/client-go/blob/e6b0ffda95bb53fab6259ebc653a0bbd3e826d9d/examples/create-update-delete-deployment/main.go#L118
 
@@ -331,7 +327,7 @@ func (r *ReconcileSync) updateStatefulSets(ctx context.Context, fetchedSecrets m
 		}
 
 		for _, statefulset := range statefulsets.Items {
-			if changed := maybeUpdatePodSpec(&statefulset.Spec.Template.Spec, secrets); changed {
+			if changed := maybeUpdatePodTemplate(&statefulset.Spec.Template, secrets); changed {
 
 				if err := r.Update(ctx, &statefulset); err != nil {
 					return err
@@ -351,7 +347,7 @@ func (r *ReconcileSync) updateCronjobs(ctx context.Context, fetchedSecrets map[s
 		}
 
 		for _, cronjob := range cronjobs.Items {
-			if changed := maybeUpdatePodSpec(&cronjob.Spec.JobTemplate.Spec.Template.Spec, secrets); changed {
+			if changed := maybeUpdatePodTemplate(&cronjob.Spec.JobTemplate.Spec.Template, secrets); changed {
 
 				if err := r.Update(ctx, &cronjob); err != nil {
 					return err
@@ -361,79 +357,6 @@ func (r *ReconcileSync) updateCronjobs(ctx context.Context, fetchedSecrets map[s
 	}
 
 	return nil
-}
-
-func maybeUpdate(value string, secret fetchedSecret) (bool, string) {
-	changed := false
-	matches := secretNameRegexp.FindStringSubmatch(value)
-
-	if len(matches) == 3 && matches[1] == secret.name {
-		changed = true
-		value = secret.hashedName
-	}
-
-	return changed, value
-}
-
-func maybeUpdatePodSpec(pod *corev1.PodSpec, secrets []fetchedSecret) bool {
-	podSpecChanged := false
-
-	if changed := maybeUpdateContainer(pod.InitContainers, secrets); changed {
-		podSpecChanged = changed
-	}
-
-	if changed := maybeUpdateContainer(pod.Containers, secrets); changed {
-		podSpecChanged = changed
-	}
-
-	for _, vol := range pod.Volumes {
-		if vol.VolumeSource.Secret == nil {
-			continue
-		}
-
-		for _, secret := range secrets {
-			if changed, value := maybeUpdate(vol.VolumeSource.Secret.SecretName, secret); changed {
-				vol.VolumeSource.Secret.SecretName = value
-				podSpecChanged = changed
-			}
-		}
-	}
-
-	return podSpecChanged
-}
-
-func maybeUpdateContainer(containers []corev1.Container, secrets []fetchedSecret) bool {
-	containerChanged := false
-
-	for _, container := range containers {
-		for _, e := range container.Env {
-			if e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil {
-				continue
-			}
-
-			for _, secret := range secrets {
-				if changed, value := maybeUpdate(e.ValueFrom.SecretKeyRef.LocalObjectReference.Name, secret); changed {
-					e.ValueFrom.SecretKeyRef.LocalObjectReference.Name = value
-					containerChanged = true
-				}
-			}
-		}
-
-		for _, e := range container.EnvFrom {
-			if e.SecretRef == nil {
-				continue
-			}
-
-			for _, secret := range secrets {
-				if changed, value := maybeUpdate(e.SecretRef.LocalObjectReference.Name, secret); changed {
-					e.SecretRef.LocalObjectReference.Name = value
-					containerChanged = true
-				}
-			}
-		}
-	}
-
-	return containerChanged
 }
 
 func getSecretValue(ctx context.Context, svc secretsmanageriface.SecretsManagerAPI, secretARN *string) (*secretsmanager.GetSecretValueOutput, error) {
@@ -452,102 +375,6 @@ func getSecretValue(ctx context.Context, svc secretsmanageriface.SecretsManagerA
 	}
 
 	return result, nil
-}
-
-func convertToKubernetesSecret(secretName string, secret *secretsmanager.GetSecretValueOutput) (*corev1.Secret, error) {
-	parts := strings.Split(secretName, "/")
-
-	var namespace string
-	var name string
-
-	if len(parts) == 1 {
-		namespace = "default"
-		name = parts[0]
-	} else if len(parts) == 2 {
-		namespace = parts[0]
-		name = parts[1]
-	} else {
-		// TODO: Support namespace/name/(entry)?
-		return nil, fmt.Errorf("failed to decode secret name \"%s\", more then two parts", secretName)
-	}
-
-	meta := metav1.ObjectMeta{
-		Name:      name,
-		Namespace: namespace,
-	}
-
-	if secret.SecretString != nil {
-		secretValue := []byte(aws.StringValue(secret.SecretString))
-
-		var awsSecretMap map[string]interface{}
-		if err := json.Unmarshal(secretValue, &awsSecretMap); err != nil {
-			// Secret values might not be json, which is fine.
-			data, err := base64Decode(secretValue)
-			if err != nil {
-				return nil, err
-			}
-
-			return &corev1.Secret{
-				ObjectMeta: meta,
-				Data: map[string][]byte{
-					"string": data,
-				},
-			}, nil
-		}
-
-		k8sSecretMap := map[string][]byte{}
-		for key, i := range awsSecretMap {
-			var secretValue []byte
-
-			switch value := i.(type) {
-			case string:
-				secretValue = []byte(value)
-			default:
-				jsonValue, err := json.Marshal(value)
-				if err != nil {
-					return nil, err
-				}
-
-				secretValue = jsonValue
-			}
-
-			data, err := base64Decode(secretValue)
-			if err != nil {
-				return nil, err
-			}
-
-			k8sSecretMap[key] = data
-		}
-
-		return &corev1.Secret{
-			ObjectMeta: meta,
-			Data:       k8sSecretMap,
-		}, nil
-	} else if len(secret.SecretBinary) > 0 {
-		data, err := base64Decode(secret.SecretBinary)
-		if err != nil {
-			return nil, err
-		}
-
-		return &corev1.Secret{
-			ObjectMeta: meta,
-			Data: map[string][]byte{
-				"binary": data,
-			},
-		}, nil
-	} else {
-		return nil, fmt.Errorf("secret does not include secret string or secret binary")
-	}
-}
-
-func base64Decode(data []byte) ([]byte, error) {
-	out := make([]byte, base64.StdEncoding.DecodedLen(len(data)))
-	_, err := base64.StdEncoding.Decode(out, data)
-	if err != nil {
-		return nil, err
-	}
-
-	return out, nil
 }
 
 func listSecrets(ctx context.Context, svc secretsmanageriface.SecretsManagerAPI) ([]*secretsmanager.SecretListEntry, error) {
