@@ -17,27 +17,27 @@ package sync
 
 import corev1 "k8s.io/api/core/v1"
 
-func maybeUpdate(value string, secret fetchedSecret) (bool, string) {
+func maybeUpdate(value string, updatedSecret hashedSecretRef) (bool, string) {
 	changed := false
 	matches := secretNameRegexp.FindStringSubmatch(value)
 
-	if len(matches) == 3 && matches[1] == secret.name {
+	if len(matches) == 3 && matches[1] == updatedSecret.name {
 		changed = true
-		value = secret.hashedName
+		value = updatedSecret.hashedName
 	}
 
 	return changed, value
 }
 
-func maybeUpdatePodTemplate(podTemplateSpec *corev1.PodTemplateSpec, secrets []fetchedSecret) bool {
+func maybeUpdatePodTemplate(podTemplateSpec *corev1.PodTemplateSpec, updatedSecret hashedSecretRef) bool {
 	pod := podTemplateSpec.Spec
 	podSpecChanged := false
 
-	if changed := maybeUpdateContainer(pod.InitContainers, secrets); changed {
+	if changed := maybeUpdateContainer(pod.InitContainers, updatedSecret); changed {
 		podSpecChanged = changed
 	}
 
-	if changed := maybeUpdateContainer(pod.Containers, secrets); changed {
+	if changed := maybeUpdateContainer(pod.Containers, updatedSecret); changed {
 		podSpecChanged = changed
 	}
 
@@ -46,18 +46,16 @@ func maybeUpdatePodTemplate(podTemplateSpec *corev1.PodTemplateSpec, secrets []f
 			continue
 		}
 
-		for _, secret := range secrets {
-			if changed, value := maybeUpdate(vol.VolumeSource.Secret.SecretName, secret); changed {
-				vol.VolumeSource.Secret.SecretName = value
-				podSpecChanged = changed
-			}
+		if changed, value := maybeUpdate(vol.VolumeSource.Secret.SecretName, updatedSecret); changed {
+			vol.VolumeSource.Secret.SecretName = value
+			podSpecChanged = changed
 		}
 	}
 
 	return podSpecChanged
 }
 
-func maybeUpdateContainer(containers []corev1.Container, secrets []fetchedSecret) bool {
+func maybeUpdateContainer(containers []corev1.Container, updatedSecret hashedSecretRef) bool {
 	containerChanged := false
 
 	for _, container := range containers {
@@ -66,11 +64,9 @@ func maybeUpdateContainer(containers []corev1.Container, secrets []fetchedSecret
 				continue
 			}
 
-			for _, secret := range secrets {
-				if changed, value := maybeUpdate(e.ValueFrom.SecretKeyRef.LocalObjectReference.Name, secret); changed {
-					e.ValueFrom.SecretKeyRef.LocalObjectReference.Name = value
-					containerChanged = true
-				}
+			if changed, value := maybeUpdate(e.ValueFrom.SecretKeyRef.LocalObjectReference.Name, updatedSecret); changed {
+				e.ValueFrom.SecretKeyRef.LocalObjectReference.Name = value
+				containerChanged = true
 			}
 		}
 
@@ -79,11 +75,9 @@ func maybeUpdateContainer(containers []corev1.Container, secrets []fetchedSecret
 				continue
 			}
 
-			for _, secret := range secrets {
-				if changed, value := maybeUpdate(e.SecretRef.LocalObjectReference.Name, secret); changed {
-					e.SecretRef.LocalObjectReference.Name = value
-					containerChanged = true
-				}
+			if changed, value := maybeUpdate(e.SecretRef.LocalObjectReference.Name, updatedSecret); changed {
+				e.SecretRef.LocalObjectReference.Name = value
+				containerChanged = true
 			}
 		}
 	}

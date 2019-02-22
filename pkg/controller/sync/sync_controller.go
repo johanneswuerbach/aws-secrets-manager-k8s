@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
-	"strings"
 	"time"
 
 	awssecretsmanagerv1alpha1 "github.com/johanneswuerbach/aws-secrets-manager-k8s/pkg/apis/awssecretsmanager/v1alpha1"
@@ -124,7 +123,8 @@ type ReconcileSync struct {
 	newClient func(string) secretsmanageriface.SecretsManagerAPI
 }
 
-type fetchedSecret struct {
+type hashedSecretRef struct {
+	namespace  string
 	name       string
 	hashedName string
 	arn        string
@@ -157,137 +157,105 @@ func (r *ReconcileSync) Reconcile(request reconcile.Request) (reconcile.Result, 
 		return reconcile.Result{}, err
 	}
 
-	allowedNamespaces := []string{instance.Namespace}
+	awsSecretRole := instance.Spec.AWSRoleARN
+	awsSecretARN := instance.Spec.AWSSecretARN
 
-	if len(instance.Spec.Namespaces) > 0 {
-		allowedNamespaces = instance.Spec.Namespaces
-	}
+	svc := r.newClient(awsSecretRole)
 
-	svc := r.newClient(instance.Spec.AWSRoleARN)
-
-	awsSecrets, err := listSecrets(ctx, svc)
+	awsSecret, err := describeSecret(ctx, svc, instance.Spec.AWSSecretARN)
 	if err != nil {
-		log.Error(err, "Failed listing secrets")
+		log.Error(err, "Failed describing secret", "arn", awsSecretARN, "role", awsSecretRole)
 		return reconcile.Result{
 			RequeueAfter: defaultLoopTime,
 		}, nil
 	}
 
-	fetchedSecrets := map[string][]fetchedSecret{}
+	// TODO Only fetch the value when a new secret version has been found
+	result, err := getSecretValue(ctx, svc, awsSecret.ARN)
+	if err != nil {
+		log.Error(err, "Failed getting secret value", "arn", awsSecretARN)
+		return reconcile.Result{
+			RequeueAfter: defaultLoopTime,
+		}, nil
+	}
 
-	for _, awsSecret := range awsSecrets {
-		awsSecretARN := aws.StringValue(awsSecret.ARN)
-		awsSecretName := aws.StringValue(awsSecret.Name)
+	secret, err := convertToKubernetesSecret(result, instance)
+	if err != nil {
+		log.Error(err, "Failed converting secret", "arn", awsSecretARN)
+		return reconcile.Result{
+			RequeueAfter: defaultLoopTime,
+		}, nil
+	}
 
-		// Skip secrets not starting with Prefix
-		// When adheering to the principle of least privilege the controller shouldn't have access
-		// to those as it will never rendered them into kubernetes secrets
-		if !strings.HasPrefix(awsSecretName, instance.Spec.Prefix) {
-			log.Info("Skipping AWS Secrets Manager secret, not matching prefix.",
-				"arn", awsSecretARN,
-				"prefix", instance.Spec.Prefix,
-				"name", awsSecretName)
-			continue
+	if err := controllerutil.SetControllerReference(instance, secret, r.scheme); err != nil {
+		log.Error(err, "Failed setting controller reference", "arn", awsSecretARN)
+		return reconcile.Result{
+			RequeueAfter: defaultLoopTime,
+		}, nil
+	}
+
+	hash, err := hash.SecretHash(secret)
+	if err != nil {
+		log.Error(err, "Failed hashing secret", "arn", awsSecretARN)
+	}
+	plainSecretName := secret.Name
+	secret.Name = fmt.Sprintf("%s-%s", secret.Name, hash)
+
+	updatedSecret := hashedSecretRef{
+		namespace:  secret.Namespace,
+		name:       plainSecretName,
+		hashedName: secret.Name,
+		arn:        awsSecretARN,
+	}
+
+	// Sanity check secret name
+	if !secretNameRegexp.MatchString(secret.Name) {
+		log.Error(fmt.Errorf("malformed secret name: %s", secret.Name), "malformed kubernetes secret name", "arn", awsSecretARN)
+		return reconcile.Result{
+			RequeueAfter: defaultLoopTime,
+		}, nil
+	}
+
+	// Check if the Secret already exists
+	found := &corev1.Secret{}
+	err = r.Get(ctx, types.NamespacedName{Name: secret.Name, Namespace: secret.Namespace}, found)
+	if err != nil && errors.IsNotFound(err) {
+		log.Info("Creating Secret", "namespace", secret.Namespace, "name", secret.Name, "arn", awsSecretARN)
+		if err = r.Create(ctx, secret); err != nil {
+			log.Error(err, "Failed to create kubernetes secret", "arn", awsSecretARN)
+			return reconcile.Result{
+				RequeueAfter: defaultLoopTime,
+			}, nil
 		}
+	} else if err != nil {
+		log.Error(err, "Failed to get kubernetes secret", "arn", awsSecretARN)
+		return reconcile.Result{
+			RequeueAfter: defaultLoopTime,
+		}, nil
+	}
 
-		awsSecretName = strings.TrimPrefix(awsSecretName, instance.Spec.Prefix)
+	// Update the found secret and write the result back if there are any changes
+	if !reflect.DeepEqual(secret, found) {
+		found.Data = secret.Data
+		log.Info("Updating Secret", "namespace", secret.Namespace, "name", secret.Name, "arn", awsSecretARN)
 
-		// TODO Fast path if "*" is allowed
-		allowed := false
-		for _, allowedNamespace := range allowedNamespaces {
-			if allowedNamespace == "*" || strings.HasPrefix(awsSecretName, fmt.Sprintf("%s/", allowedNamespace)) {
-				allowed = true
-				break
-			}
-		}
-
-		if !allowed {
-			log.Info("Skipping AWS Secrets Manager secret, not allowed namespace.",
-				"arn", awsSecretARN,
-				"prefix", instance.Spec.Prefix,
-				"name", awsSecretName)
-			continue
-		}
-
-		// TODO Ideally only fetch the value when a new secret version has been found
-		result, err := getSecretValue(ctx, svc, awsSecret.ARN)
-		if err != nil {
-			log.Error(err, "Failed getting secret value", "arn", awsSecretARN)
-			continue
-		}
-
-		secret, err := convertToKubernetesSecret(awsSecretName, result)
-		if err != nil {
-			log.Error(err, "Failed converting secret", "arn", awsSecretARN)
-			continue
-		}
-
-		if err := controllerutil.SetControllerReference(instance, secret, r.scheme); err != nil {
-			log.Error(err, "Failed setting controller reference", "arn", awsSecretARN)
-			continue
-		}
-
-		hash, err := hash.SecretHash(secret)
-		if err != nil {
-			log.Error(err, "Failed hashing secret", "arn", awsSecretARN)
-			continue
-		}
-		plainSecretName := secret.Name
-		secret.Name = fmt.Sprintf("%s-%s", secret.Name, hash)
-
-		f := fetchedSecret{
-			name:       plainSecretName,
-			hashedName: secret.Name,
-			arn:        awsSecretARN,
-		}
-
-		if secrets, ok := fetchedSecrets[secret.Namespace]; ok {
-			fetchedSecrets[secret.Namespace] = append(secrets, f)
-		} else {
-			fetchedSecrets[secret.Namespace] = []fetchedSecret{f}
-		}
-
-		// Sanity check secret name
-		if !secretNameRegexp.MatchString(secret.Name) {
-			log.Error(fmt.Errorf("malformed secret name: %s", secret.Name), "malformed kubernetes secret name", "arn", awsSecretARN)
-			continue
-		}
-
-		// Check if the Secret already exists
-		found := &corev1.Secret{}
-		err = r.Get(ctx, types.NamespacedName{Name: secret.Name, Namespace: secret.Namespace}, found)
-		if err != nil && errors.IsNotFound(err) {
-			log.Info("Creating Secret", "namespace", secret.Namespace, "name", secret.Name, "arn", awsSecretARN)
-			if err = r.Create(ctx, secret); err != nil {
-				log.Error(err, "Failed to create kubernetes secret", "arn", awsSecretARN)
-				continue
-			}
-		} else if err != nil {
-			log.Error(err, "Failed to get kubernetes secret", "arn", awsSecretARN)
-			continue
-		}
-
-		// Update the found secret and write the result back if there are any changes
-		if !reflect.DeepEqual(secret, found) {
-			found.Data = secret.Data
-			log.Info("Updating Secret", "namespace", secret.Namespace, "name", secret.Name, "arn", awsSecretARN)
-
-			if err = r.Update(ctx, found); err != nil {
-				log.Error(err, "Failed to update kubernetes secret", "arn", awsSecretARN)
-				continue
-			}
+		if err = r.Update(ctx, found); err != nil {
+			log.Error(err, "Failed to update kubernetes secret", "arn", awsSecretARN)
+			return reconcile.Result{
+				RequeueAfter: defaultLoopTime,
+			}, nil
 		}
 	}
 
-	if err := r.updateDeployments(ctx, fetchedSecrets); err != nil {
+	if err := r.updateDeployments(ctx, updatedSecret); err != nil {
 		log.Error(err, "Failed to update deployments")
 	}
 
-	if err := r.updateStatefulSets(ctx, fetchedSecrets); err != nil {
+	if err := r.updateStatefulSets(ctx, updatedSecret); err != nil {
 		log.Error(err, "Failed to update statefulsets")
 	}
 
-	if err := r.updateCronjobs(ctx, fetchedSecrets); err != nil {
+	if err := r.updateCronjobs(ctx, updatedSecret); err != nil {
 		log.Error(err, "Failed to update cronjobs")
 	}
 
@@ -297,21 +265,19 @@ func (r *ReconcileSync) Reconcile(request reconcile.Request) (reconcile.Result, 
 	}, nil
 }
 
-func (r *ReconcileSync) updateDeployments(ctx context.Context, fetchedSecrets map[string][]fetchedSecret) error {
-	for namespace, secrets := range fetchedSecrets {
-		deployments := &appsv1.DeploymentList{}
-		if err := r.List(ctx, &client.ListOptions{Namespace: namespace}, deployments); err != nil {
-			return err
-		}
+func (r *ReconcileSync) updateDeployments(ctx context.Context, updatedSecret hashedSecretRef) error {
+	deployments := &appsv1.DeploymentList{}
+	if err := r.List(ctx, &client.ListOptions{Namespace: updatedSecret.namespace}, deployments); err != nil {
+		return err
+	}
 
-		for _, deployment := range deployments.Items {
-			if changed := maybeUpdatePodTemplate(&deployment.Spec.Template, secrets); changed {
+	for _, deployment := range deployments.Items {
+		if changed := maybeUpdatePodTemplate(&deployment.Spec.Template, updatedSecret); changed {
 
-				// TODO: Use https://github.com/kubernetes/client-go/blob/e6b0ffda95bb53fab6259ebc653a0bbd3e826d9d/examples/create-update-delete-deployment/main.go#L118
+			// TODO: Use https://github.com/kubernetes/client-go/blob/e6b0ffda95bb53fab6259ebc653a0bbd3e826d9d/examples/create-update-delete-deployment/main.go#L118
 
-				if err := r.Update(ctx, &deployment); err != nil {
-					return err
-				}
+			if err := r.Update(ctx, &deployment); err != nil {
+				return err
 			}
 		}
 	}
@@ -319,19 +285,17 @@ func (r *ReconcileSync) updateDeployments(ctx context.Context, fetchedSecrets ma
 	return nil
 }
 
-func (r *ReconcileSync) updateStatefulSets(ctx context.Context, fetchedSecrets map[string][]fetchedSecret) error {
-	for namespace, secrets := range fetchedSecrets {
-		statefulsets := &appsv1.StatefulSetList{}
-		if err := r.List(ctx, &client.ListOptions{Namespace: namespace}, statefulsets); err != nil {
-			return err
-		}
+func (r *ReconcileSync) updateStatefulSets(ctx context.Context, updatedSecret hashedSecretRef) error {
+	statefulsets := &appsv1.StatefulSetList{}
+	if err := r.List(ctx, &client.ListOptions{Namespace: updatedSecret.namespace}, statefulsets); err != nil {
+		return err
+	}
 
-		for _, statefulset := range statefulsets.Items {
-			if changed := maybeUpdatePodTemplate(&statefulset.Spec.Template, secrets); changed {
+	for _, statefulset := range statefulsets.Items {
+		if changed := maybeUpdatePodTemplate(&statefulset.Spec.Template, updatedSecret); changed {
 
-				if err := r.Update(ctx, &statefulset); err != nil {
-					return err
-				}
+			if err := r.Update(ctx, &statefulset); err != nil {
+				return err
 			}
 		}
 	}
@@ -339,19 +303,17 @@ func (r *ReconcileSync) updateStatefulSets(ctx context.Context, fetchedSecrets m
 	return nil
 }
 
-func (r *ReconcileSync) updateCronjobs(ctx context.Context, fetchedSecrets map[string][]fetchedSecret) error {
-	for namespace, secrets := range fetchedSecrets {
-		cronjobs := &batchv1beta1.CronJobList{}
-		if err := r.List(ctx, &client.ListOptions{Namespace: namespace}, cronjobs); err != nil {
-			return err
-		}
+func (r *ReconcileSync) updateCronjobs(ctx context.Context, updatedSecret hashedSecretRef) error {
+	cronjobs := &batchv1beta1.CronJobList{}
+	if err := r.List(ctx, &client.ListOptions{Namespace: updatedSecret.namespace}, cronjobs); err != nil {
+		return err
+	}
 
-		for _, cronjob := range cronjobs.Items {
-			if changed := maybeUpdatePodTemplate(&cronjob.Spec.JobTemplate.Spec.Template, secrets); changed {
+	for _, cronjob := range cronjobs.Items {
+		if changed := maybeUpdatePodTemplate(&cronjob.Spec.JobTemplate.Spec.Template, updatedSecret); changed {
 
-				if err := r.Update(ctx, &cronjob); err != nil {
-					return err
-				}
+			if err := r.Update(ctx, &cronjob); err != nil {
+				return err
 			}
 		}
 	}
@@ -377,19 +339,19 @@ func getSecretValue(ctx context.Context, svc secretsmanageriface.SecretsManagerA
 	return result, nil
 }
 
-func listSecrets(ctx context.Context, svc secretsmanageriface.SecretsManagerAPI) ([]*secretsmanager.SecretListEntry, error) {
-	secrets := []*secretsmanager.SecretListEntry{}
-
-	if err := svc.ListSecretsPagesWithContext(ctx, &secretsmanager.ListSecretsInput{}, func(page *secretsmanager.ListSecretsOutput, lastPage bool) bool {
-		secrets = append(secrets, page.SecretList...)
-		return lastPage
-	}); err != nil {
-		if aerr, ok := err.(awserr.Error); ok {
-			return nil, e.Wrapf(aerr.OrigErr(), "Failed listing secrets, code: %s, message: %s", aerr.Code(), aerr.Message())
-		}
-
-		return nil, e.Wrap(err, "Failed listing secrets")
+func describeSecret(ctx context.Context, svc secretsmanageriface.SecretsManagerAPI, secretARN string) (*secretsmanager.DescribeSecretOutput, error) {
+	input := &secretsmanager.DescribeSecretInput{
+		SecretId: aws.String(secretARN),
 	}
 
-	return secrets, nil
+	result, err := svc.DescribeSecretWithContext(ctx, input)
+	if err != nil {
+		if aerr, ok := err.(awserr.Error); ok {
+			return nil, e.Wrapf(aerr.OrigErr(), "Failed describing secret, code: %s, message: %s", aerr.Code(), aerr.Message())
+		}
+
+		return nil, e.Wrap(err, "Failed describing secret")
+	}
+
+	return result, nil
 }

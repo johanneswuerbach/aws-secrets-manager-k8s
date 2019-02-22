@@ -19,49 +19,28 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"strings"
+
+	awssecretsmanagerv1alpha1 "github.com/johanneswuerbach/aws-secrets-manager-k8s/pkg/apis/awssecretsmanager/v1alpha1"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/secretsmanager"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 )
 
-func convertToKubernetesNamespacedName(secretName string) (*types.NamespacedName, error) {
-	parts := strings.Split(secretName, "/")
-
-	var namespace string
-	var name string
-
-	if len(parts) == 1 {
-		namespace = "default"
-		name = parts[0]
-	} else if len(parts) == 2 {
-		namespace = parts[0]
-		name = parts[1]
-	} else {
-		// TODO: Support namespace/name/(entry)?
-		return nil, fmt.Errorf("failed to decode secret name \"%s\", more then two parts", secretName)
-	}
-
-	return &types.NamespacedName{Name: name, Namespace: namespace}, nil
-}
-
-func convertToKubernetesSecret(secretName string, secret *secretsmanager.GetSecretValueOutput) (*corev1.Secret, error) {
-	namespacedName, err := convertToKubernetesNamespacedName(secretName)
-	if err != nil {
-		return nil, err
-	}
-
-	meta := metav1.ObjectMeta{
-		Name:      namespacedName.Name,
-		Namespace: namespacedName.Namespace,
-		Annotations: map[string]string{
-			"aws-secrets-manager-version-id": aws.StringValue(secret.VersionId),
-			"aws-secrets-manager-arn":        aws.StringValue(secret.ARN),
+func convertToKubernetesSecret(secret *secretsmanager.GetSecretValueOutput, instance *awssecretsmanagerv1alpha1.Sync) (*corev1.Secret, error) {
+	k8sSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      instance.Name,
+			Namespace: instance.Namespace,
+			Annotations: map[string]string{
+				"aws-secrets-manager-version-id": aws.StringValue(secret.VersionId),
+				"aws-secrets-manager-arn":        aws.StringValue(secret.ARN),
+			},
 		},
 	}
+
+	instance.Spec.Template.ObjectMeta.DeepCopyInto(&k8sSecret.ObjectMeta)
 
 	if secret.SecretString != nil {
 		secretValue := []byte(aws.StringValue(secret.SecretString))
@@ -74,12 +53,10 @@ func convertToKubernetesSecret(secretName string, secret *secretsmanager.GetSecr
 				return nil, err
 			}
 
-			return &corev1.Secret{
-				ObjectMeta: meta,
-				Data: map[string][]byte{
-					"string": data,
-				},
-			}, nil
+			k8sSecret.Data = map[string][]byte{
+				"string": data,
+			}
+			return k8sSecret, nil
 		}
 
 		k8sSecretMap := map[string][]byte{}
@@ -106,22 +83,18 @@ func convertToKubernetesSecret(secretName string, secret *secretsmanager.GetSecr
 			k8sSecretMap[key] = data
 		}
 
-		return &corev1.Secret{
-			ObjectMeta: meta,
-			Data:       k8sSecretMap,
-		}, nil
+		k8sSecret.Data = k8sSecretMap
+		return k8sSecret, nil
 	} else if len(secret.SecretBinary) > 0 {
 		data, err := base64Decode(secret.SecretBinary)
 		if err != nil {
 			return nil, err
 		}
 
-		return &corev1.Secret{
-			ObjectMeta: meta,
-			Data: map[string][]byte{
-				"binary": data,
-			},
-		}, nil
+		k8sSecret.Data = map[string][]byte{
+			"binary": data,
+		}
+		return k8sSecret, nil
 	} else {
 		return nil, fmt.Errorf("secret does not include secret string or secret binary")
 	}
