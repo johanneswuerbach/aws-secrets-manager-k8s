@@ -40,7 +40,7 @@ import (
 var c client.Client
 
 var expectedRequest = reconcile.Request{NamespacedName: types.NamespacedName{Name: "foo", Namespace: "default"}}
-var secretName = "foo-52f272c84b"
+var secretName = "foo-ftmt28kk28"
 var secretKey = types.NamespacedName{Name: secretName, Namespace: "default"}
 
 const timeout = time.Second * 5
@@ -128,7 +128,7 @@ func TestReconcile(t *testing.T) {
 									ValueFrom: &corev1.EnvVarSource{
 										SecretKeyRef: &corev1.SecretKeySelector{
 											LocalObjectReference: corev1.LocalObjectReference{
-												Name: "test-secret-1234567890",
+												Name: "foo-ftmt28kk28",
 											},
 											Key: "string",
 										},

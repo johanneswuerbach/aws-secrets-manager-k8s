@@ -31,8 +31,8 @@ import (
 func convertToKubernetesSecret(secret *secretsmanager.GetSecretValueOutput, instance *awssecretsmanagerv1alpha1.Sync) (*corev1.Secret, error) {
 	k8sSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      instance.Name,
-			Namespace: instance.Namespace,
+			Name:      instance.ObjectMeta.Name,
+			Namespace: instance.ObjectMeta.Namespace,
 			Annotations: map[string]string{
 				"aws-secrets-manager-version-id": aws.StringValue(secret.VersionId),
 				"aws-secrets-manager-arn":        aws.StringValue(secret.ARN),
@@ -40,7 +40,7 @@ func convertToKubernetesSecret(secret *secretsmanager.GetSecretValueOutput, inst
 		},
 	}
 
-	instance.Spec.Template.ObjectMeta.DeepCopyInto(&k8sSecret.ObjectMeta)
+	// instance.Spec.Template.ObjectMeta.DeepCopyInto(&k8sSecret.ObjectMeta)
 
 	if secret.SecretString != nil {
 		secretValue := []byte(aws.StringValue(secret.SecretString))
