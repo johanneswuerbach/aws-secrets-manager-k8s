@@ -14,4 +14,6 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o manager github.com/joha
 FROM ubuntu:latest
 WORKDIR /
 COPY --from=builder /go/src/github.com/johanneswuerbach/aws-secrets-manager-k8s/manager .
+
+RUN apt-get update && apt-get install -y ca-certificates
 ENTRYPOINT ["/manager"]

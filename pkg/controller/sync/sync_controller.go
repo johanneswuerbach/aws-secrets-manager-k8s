@@ -163,7 +163,7 @@ func (r *ReconcileSync) Reconcile(request reconcile.Request) (reconcile.Result, 
 	svc := r.newClient(awsSecretRole)
 
 	awsSecret, err := describeSecret(ctx, svc, instance.Spec.AWSSecretARN)
-	if err != nil {
+	if err != nil || awsSecret == nil {
 		log.Error(err, "Failed describing secret", "arn", awsSecretARN, "role", awsSecretRole)
 		return reconcile.Result{
 			RequeueAfter: defaultLoopTime,
@@ -247,6 +247,8 @@ func (r *ReconcileSync) Reconcile(request reconcile.Request) (reconcile.Result, 
 		}
 	}
 
+	fmt.Print("update depl")
+
 	if err := r.updateDeployments(ctx, updatedSecret); err != nil {
 		log.Error(err, "Failed to update deployments")
 	}
@@ -271,9 +273,12 @@ func (r *ReconcileSync) updateDeployments(ctx context.Context, updatedSecret has
 		return err
 	}
 
-	for _, deployment := range deployments.Items {
-		if changed := maybeUpdatePodTemplate(&deployment.Spec.Template, updatedSecret); changed {
+	fmt.Printf("Update %v", deployments.Items)
 
+	for _, deployment := range deployments.Items {
+		fmt.Printf("Update %v", deployment.ObjectMeta)
+		if changed := maybeUpdatePodTemplate(&deployment.Spec.Template, updatedSecret); changed {
+			fmt.Printf("Yes")
 			// TODO: Use https://github.com/kubernetes/client-go/blob/e6b0ffda95bb53fab6259ebc653a0bbd3e826d9d/examples/create-update-delete-deployment/main.go#L118
 
 			if err := r.Update(ctx, &deployment); err != nil {

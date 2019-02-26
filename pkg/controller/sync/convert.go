@@ -48,10 +48,7 @@ func convertToKubernetesSecret(secret *secretsmanager.GetSecretValueOutput, inst
 		var awsSecretMap map[string]interface{}
 		if err := json.Unmarshal(secretValue, &awsSecretMap); err != nil {
 			// Secret values might not be json, which is fine.
-			data, err := base64Decode(secretValue)
-			if err != nil {
-				return nil, err
-			}
+			data := base64Encode(secretValue)
 
 			k8sSecret.Data = map[string][]byte{
 				"string": data,
@@ -75,10 +72,7 @@ func convertToKubernetesSecret(secret *secretsmanager.GetSecretValueOutput, inst
 				secretValue = jsonValue
 			}
 
-			data, err := base64Decode(secretValue)
-			if err != nil {
-				return nil, err
-			}
+			data := base64Encode(secretValue)
 
 			k8sSecretMap[key] = data
 		}
@@ -86,10 +80,7 @@ func convertToKubernetesSecret(secret *secretsmanager.GetSecretValueOutput, inst
 		k8sSecret.Data = k8sSecretMap
 		return k8sSecret, nil
 	} else if len(secret.SecretBinary) > 0 {
-		data, err := base64Decode(secret.SecretBinary)
-		if err != nil {
-			return nil, err
-		}
+		data := base64Encode(secret.SecretBinary)
 
 		k8sSecret.Data = map[string][]byte{
 			"binary": data,
@@ -100,12 +91,6 @@ func convertToKubernetesSecret(secret *secretsmanager.GetSecretValueOutput, inst
 	}
 }
 
-func base64Decode(data []byte) ([]byte, error) {
-	out := make([]byte, base64.StdEncoding.DecodedLen(len(data)))
-	_, err := base64.StdEncoding.Decode(out, data)
-	if err != nil {
-		return nil, err
-	}
-
-	return out, nil
+func base64Encode(data []byte) []byte {
+	return []byte(base64.StdEncoding.EncodeToString(data))
 }
