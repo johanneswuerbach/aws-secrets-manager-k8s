@@ -28,12 +28,24 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func secretValueToKubernetesSecretData(secretValue []byte)(map[string][]byte, error) {
+
+func secretBinaryToKubernetesSecretData(secretBinary []byte)(map[string][]byte, error) {
+	if len(secretBinary) == 0 {
+		return nil, fmt.Errorf("secret does not include secret string or secret binary")
+	}
+
+	data := base64Encode(secretBinary)
+	return map[string][]byte{
+		"binary": data,
+	}, nil
+}
+
+func secretStringToKubernetesSecretData(secretString []byte)(map[string][]byte, error) {
 	awsSecretMap := make(map[string]interface{})
 
-	if err := json.Unmarshal(secretValue, &awsSecretMap); err != nil {
+	if err := json.Unmarshal(secretString, &awsSecretMap); err != nil {
 		// Secret value is not a JSON
-		data := base64Encode(secretValue)
+		data := base64Encode(secretString)
 		return map[string][]byte{
 			"string": data,
 		}, nil
@@ -56,9 +68,7 @@ func secretValueToKubernetesSecretData(secretValue []byte)(map[string][]byte, er
 			secretValue = jsonValue
 		}
 
-		data := base64Encode(secretValue)
-
-		k8sSecretMap[key] = data
+		k8sSecretMap[key] = base64Encode(secretValue)
 	}
 
 	return k8sSecretMap, nil
@@ -76,20 +86,19 @@ func convertToKubernetesSecret(secret *secretsmanager.GetSecretValueOutput, inst
 		},
 	}
 
-	if secret.SecretString == nil {
-		if len(secret.SecretBinary) == 0 {
-			return nil, fmt.Errorf("secret does not include secret string or secret binary")
-		}
+	var k8sSecretData map[string][]byte
+	var err error
 
-		data := base64Encode(secret.SecretBinary)
-		k8sSecret.Data = map[string][]byte{
-			"binary": data,
-		}
-		return k8sSecret, nil
+	if secret.SecretString == nil {
+		k8sSecretData, err = secretBinaryToKubernetesSecretData(
+			[]byte(aws.StringValue(secret.SecretString)),
+		)
+	} else {
+		k8sSecretData, err = secretStringToKubernetesSecretData(
+			[]byte(aws.StringValue(secret.SecretString)),
+		)
 	}
 
-	secretValue  := []byte(aws.StringValue(secret.SecretString))
-	k8sSecretData, err := secretValueToKubernetesSecretData(secretValue)
 	if err != nil {
 		return nil, fmt.Errorf("failed processing secret: %s", err)
 	}
