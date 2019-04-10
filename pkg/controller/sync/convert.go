@@ -28,6 +28,42 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+func secretValueToKubernetesSecretData(secretValue []byte)(map[string][]byte, error) {
+	awsSecretMap := make(map[string]interface{})
+
+	if err := json.Unmarshal(secretValue, &awsSecretMap); err != nil {
+		// Secret value is not a JSON
+		data := base64Encode(secretValue)
+		return map[string][]byte{
+			"string": data,
+		}, nil
+	}
+
+	// Secret value is a JSON
+	k8sSecretMap := map[string][]byte{}
+	for key, i := range awsSecretMap {
+		var secretValue []byte
+
+		switch value := i.(type) {
+		case string:
+			secretValue = []byte(value)
+		default:
+			jsonValue, err := json.Marshal(value)
+			if err != nil {
+				return nil, err
+			}
+
+			secretValue = jsonValue
+		}
+
+		data := base64Encode(secretValue)
+
+		k8sSecretMap[key] = data
+	}
+
+	return k8sSecretMap, nil
+}
+
 func convertToKubernetesSecret(secret *secretsmanager.GetSecretValueOutput, instance *awssecretsmanagerv1alpha1.Sync) (*corev1.Secret, error) {
 	k8sSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -40,55 +76,26 @@ func convertToKubernetesSecret(secret *secretsmanager.GetSecretValueOutput, inst
 		},
 	}
 
-	// instance.Spec.Template.ObjectMeta.DeepCopyInto(&k8sSecret.ObjectMeta)
-
-	if secret.SecretString != nil {
-		secretValue := []byte(aws.StringValue(secret.SecretString))
-
-		var awsSecretMap map[string]interface{}
-		if err := json.Unmarshal(secretValue, &awsSecretMap); err != nil {
-			// Secret values might not be json, which is fine.
-			data := base64Encode(secretValue)
-
-			k8sSecret.Data = map[string][]byte{
-				"string": data,
-			}
-			return k8sSecret, nil
+	if secret.SecretString == nil {
+		if len(secret.SecretBinary) == 0 {
+			return nil, fmt.Errorf("secret does not include secret string or secret binary")
 		}
 
-		k8sSecretMap := map[string][]byte{}
-		for key, i := range awsSecretMap {
-			var secretValue []byte
-
-			switch value := i.(type) {
-			case string:
-				secretValue = []byte(value)
-			default:
-				jsonValue, err := json.Marshal(value)
-				if err != nil {
-					return nil, err
-				}
-
-				secretValue = jsonValue
-			}
-
-			data := base64Encode(secretValue)
-
-			k8sSecretMap[key] = data
-		}
-
-		k8sSecret.Data = k8sSecretMap
-		return k8sSecret, nil
-	} else if len(secret.SecretBinary) > 0 {
 		data := base64Encode(secret.SecretBinary)
-
 		k8sSecret.Data = map[string][]byte{
 			"binary": data,
 		}
 		return k8sSecret, nil
-	} else {
-		return nil, fmt.Errorf("secret does not include secret string or secret binary")
 	}
+
+	secretValue  := []byte(aws.StringValue(secret.SecretString))
+	k8sSecretData, err := secretValueToKubernetesSecretData(secretValue)
+	if err != nil {
+		return nil, fmt.Errorf("failed processing secret: %s", err)
+	}
+
+	k8sSecret.Data = k8sSecretData
+	return k8sSecret, nil
 }
 
 func base64Encode(data []byte) []byte {
