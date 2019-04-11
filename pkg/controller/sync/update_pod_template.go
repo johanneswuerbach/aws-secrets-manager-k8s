@@ -30,12 +30,11 @@ func maybeUpdatePodTemplate(podTemplateSpec *corev1.PodTemplateSpec, updatedSecr
 	pod := podTemplateSpec.Spec
 	podSpecChanged := false
 
-	if changed := maybeUpdateContainer(pod.InitContainers, updatedSecret); changed {
-		podSpecChanged = changed
-	}
-
-	if changed := maybeUpdateContainer(pod.Containers, updatedSecret); changed {
-		podSpecChanged = changed
+	allPodContainers := append(pod.InitContainers, pod.Containers...)
+	for _, container := range allPodContainers {
+		if maybeUpdateContainer(container, updatedSecret) {
+			podSpecChanged = true
+		}
 	}
 
 	for _, vol := range pod.Volumes {
@@ -52,30 +51,28 @@ func maybeUpdatePodTemplate(podTemplateSpec *corev1.PodTemplateSpec, updatedSecr
 	return podSpecChanged
 }
 
-func maybeUpdateContainer(containers []corev1.Container, updatedSecret hashedSecretRef) bool {
+func maybeUpdateContainer(container corev1.Container, updatedSecret hashedSecretRef) bool {
 	containerChanged := false
 
-	for _, container := range containers {
-		for _, e := range container.Env {
-			if e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil {
-				continue
-			}
-
-			if shouldUpdate(e.ValueFrom.SecretKeyRef.LocalObjectReference.Name, updatedSecret) {
-				e.ValueFrom.SecretKeyRef.LocalObjectReference.Name = updatedSecret.hashedName
-				containerChanged = true
-			}
+	for _, e := range container.Env {
+		if e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil {
+			continue
 		}
 
-		for _, e := range container.EnvFrom {
-			if e.SecretRef == nil {
-				continue
-			}
+		if shouldUpdate(e.ValueFrom.SecretKeyRef.LocalObjectReference.Name, updatedSecret) {
+			e.ValueFrom.SecretKeyRef.LocalObjectReference.Name = updatedSecret.hashedName
+			containerChanged = true
+		}
+	}
 
-			if shouldUpdate(e.SecretRef.LocalObjectReference.Name, updatedSecret) {
-				e.SecretRef.LocalObjectReference.Name = updatedSecret.hashedName
-				containerChanged = true
-			}
+	for _, e := range container.EnvFrom {
+		if e.SecretRef == nil {
+			continue
+		}
+
+		if shouldUpdate(e.SecretRef.LocalObjectReference.Name, updatedSecret) {
+			e.SecretRef.LocalObjectReference.Name = updatedSecret.hashedName
+			containerChanged = true
 		}
 	}
 
