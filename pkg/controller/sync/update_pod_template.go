@@ -17,28 +17,24 @@ package sync
 
 import corev1 "k8s.io/api/core/v1"
 
-func maybeUpdate(value string, updatedSecret hashedSecretRef) (bool, string) {
-	changed := false
+func shouldUpdate(value string, updatedSecret hashedSecretRef) bool {
 	matches := secretNameRegexp.FindStringSubmatch(value)
-
 	if len(matches) == 3 && matches[1] == updatedSecret.name {
-		changed = true
-		value = updatedSecret.hashedName
+		return true
 	}
 
-	return changed, value
+	return false
 }
 
 func maybeUpdatePodTemplate(podTemplateSpec *corev1.PodTemplateSpec, updatedSecret hashedSecretRef) bool {
 	pod := podTemplateSpec.Spec
 	podSpecChanged := false
 
-	if changed := maybeUpdateContainer(pod.InitContainers, updatedSecret); changed {
-		podSpecChanged = changed
-	}
-
-	if changed := maybeUpdateContainer(pod.Containers, updatedSecret); changed {
-		podSpecChanged = changed
+	allPodContainers := append(pod.InitContainers, pod.Containers...)
+	for _, container := range allPodContainers {
+		if maybeUpdateContainer(container, updatedSecret) {
+			podSpecChanged = true
+		}
 	}
 
 	for _, vol := range pod.Volumes {
@@ -46,39 +42,37 @@ func maybeUpdatePodTemplate(podTemplateSpec *corev1.PodTemplateSpec, updatedSecr
 			continue
 		}
 
-		if changed, value := maybeUpdate(vol.VolumeSource.Secret.SecretName, updatedSecret); changed {
-			vol.VolumeSource.Secret.SecretName = value
-			podSpecChanged = changed
+		if shouldUpdate(vol.VolumeSource.Secret.SecretName, updatedSecret) {
+			vol.VolumeSource.Secret.SecretName = updatedSecret.hashedName
+			podSpecChanged = true
 		}
 	}
 
 	return podSpecChanged
 }
 
-func maybeUpdateContainer(containers []corev1.Container, updatedSecret hashedSecretRef) bool {
+func maybeUpdateContainer(container corev1.Container, updatedSecret hashedSecretRef) bool {
 	containerChanged := false
 
-	for _, container := range containers {
-		for _, e := range container.Env {
-			if e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil {
-				continue
-			}
-
-			if changed, value := maybeUpdate(e.ValueFrom.SecretKeyRef.LocalObjectReference.Name, updatedSecret); changed {
-				e.ValueFrom.SecretKeyRef.LocalObjectReference.Name = value
-				containerChanged = true
-			}
+	for _, e := range container.Env {
+		if e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil {
+			continue
 		}
 
-		for _, e := range container.EnvFrom {
-			if e.SecretRef == nil {
-				continue
-			}
+		if shouldUpdate(e.ValueFrom.SecretKeyRef.LocalObjectReference.Name, updatedSecret) {
+			e.ValueFrom.SecretKeyRef.LocalObjectReference.Name = updatedSecret.hashedName
+			containerChanged = true
+		}
+	}
 
-			if changed, value := maybeUpdate(e.SecretRef.LocalObjectReference.Name, updatedSecret); changed {
-				e.SecretRef.LocalObjectReference.Name = value
-				containerChanged = true
-			}
+	for _, e := range container.EnvFrom {
+		if e.SecretRef == nil {
+			continue
+		}
+
+		if shouldUpdate(e.SecretRef.LocalObjectReference.Name, updatedSecret) {
+			e.SecretRef.LocalObjectReference.Name = updatedSecret.hashedName
+			containerChanged = true
 		}
 	}
 
