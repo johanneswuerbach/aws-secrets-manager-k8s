@@ -983,6 +983,7 @@
   input-imports = [
     "github.com/aws/aws-sdk-go/aws",
     "github.com/aws/aws-sdk-go/aws/awserr",
+    "github.com/aws/aws-sdk-go/aws/credentials/stscreds",
     "github.com/aws/aws-sdk-go/aws/request",
     "github.com/aws/aws-sdk-go/aws/session",
     "github.com/aws/aws-sdk-go/service/secretsmanager",
@@ -992,6 +993,8 @@
     "github.com/onsi/gomega",
     "github.com/pkg/errors",
     "golang.org/x/net/context",
+    "k8s.io/api/apps/v1",
+    "k8s.io/api/batch/v1beta1",
     "k8s.io/api/core/v1",
     "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1",
     "k8s.io/apimachinery/pkg/api/errors",

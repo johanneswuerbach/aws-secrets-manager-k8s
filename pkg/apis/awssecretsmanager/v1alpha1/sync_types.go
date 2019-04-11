@@ -22,14 +22,25 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
+// SecretTemplateSpec describes the data a secret should have when created from a template
+type SecretTemplateSpec struct {
+	// Standard object's metadata.
+	// More info: https://git.k8s.io/community/contributors/devel/api-conventions.md#metadata
+	// +optional
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+}
+
 // SyncSpec defines the desired state of Sync
 type SyncSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	Prefix     string   `json:"prefix,omitempty"`
-	Namespaces []string `json:"namespaces,omitempty"`
-	AWSRoleARN string   `json:"awsRoleARN,omitempty"`
+	AWSRoleARN string `json:"awsRoleARN,omitempty"`
+
+	AWSSecretARN string `json:"awsSecretARN"`
+
+	// Template describes the pods that will be created.
+	Template SecretTemplateSpec `json:"template"`
 }
 
 // SyncStatus defines the observed state of Sync

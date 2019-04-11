@@ -1,0 +1,14 @@
+apiVersion: awssecretsmanager.johanneswuerbach.net/v1alpha1
+kind: Sync
+metadata:
+  labels:
+    controller-tools.k8s.io: "1.0"
+  name: rds-sync-test
+spec:
+  # Add fields here
+  awsRoleARN: arn:aws:iam::718539334177:role/secrets-test
+  awsSecretARN: arn:aws:secretsmanager:eu-west-1:718539334177:secret:delivery/content-api/rds-001-QdqJZ0
+  template:
+    metadata:
+      labels:
+        test: "secret"
