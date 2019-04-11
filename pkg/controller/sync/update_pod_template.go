@@ -17,16 +17,13 @@ package sync
 
 import corev1 "k8s.io/api/core/v1"
 
-func maybeUpdate(value string, updatedSecret hashedSecretRef) (bool, string) {
-	changed := false
+func shouldUpdate(value string, updatedSecret hashedSecretRef) bool {
 	matches := secretNameRegexp.FindStringSubmatch(value)
-
 	if len(matches) == 3 && matches[1] == updatedSecret.name {
-		changed = true
-		value = updatedSecret.hashedName
+		return true
 	}
 
-	return changed, value
+	return false
 }
 
 func maybeUpdatePodTemplate(podTemplateSpec *corev1.PodTemplateSpec, updatedSecret hashedSecretRef) bool {
@@ -46,9 +43,9 @@ func maybeUpdatePodTemplate(podTemplateSpec *corev1.PodTemplateSpec, updatedSecr
 			continue
 		}
 
-		if changed, value := maybeUpdate(vol.VolumeSource.Secret.SecretName, updatedSecret); changed {
-			vol.VolumeSource.Secret.SecretName = value
-			podSpecChanged = changed
+		if shouldUpdate(vol.VolumeSource.Secret.SecretName, updatedSecret) {
+			vol.VolumeSource.Secret.SecretName = updatedSecret.hashedName
+			podSpecChanged = true
 		}
 	}
 
@@ -64,8 +61,8 @@ func maybeUpdateContainer(containers []corev1.Container, updatedSecret hashedSec
 				continue
 			}
 
-			if changed, value := maybeUpdate(e.ValueFrom.SecretKeyRef.LocalObjectReference.Name, updatedSecret); changed {
-				e.ValueFrom.SecretKeyRef.LocalObjectReference.Name = value
+			if shouldUpdate(e.ValueFrom.SecretKeyRef.LocalObjectReference.Name, updatedSecret) {
+				e.ValueFrom.SecretKeyRef.LocalObjectReference.Name = updatedSecret.hashedName
 				containerChanged = true
 			}
 		}
@@ -75,8 +72,8 @@ func maybeUpdateContainer(containers []corev1.Container, updatedSecret hashedSec
 				continue
 			}
 
-			if changed, value := maybeUpdate(e.SecretRef.LocalObjectReference.Name, updatedSecret); changed {
-				e.SecretRef.LocalObjectReference.Name = value
+			if shouldUpdate(e.SecretRef.LocalObjectReference.Name, updatedSecret) {
+				e.SecretRef.LocalObjectReference.Name = updatedSecret.hashedName
 				containerChanged = true
 			}
 		}

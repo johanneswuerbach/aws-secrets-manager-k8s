@@ -28,8 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-
-func secretBinaryToKubernetesSecretData(secretBinary []byte)(map[string][]byte, error) {
+func secretBinaryToKubernetesSecretData(secretBinary []byte) (map[string][]byte, error) {
 	if len(secretBinary) == 0 {
 		return nil, fmt.Errorf("secret does not include secret string or secret binary")
 	}
@@ -40,7 +39,7 @@ func secretBinaryToKubernetesSecretData(secretBinary []byte)(map[string][]byte, 
 	}, nil
 }
 
-func secretStringToKubernetesSecretData(secretString []byte)(map[string][]byte, error) {
+func secretStringToKubernetesSecretData(secretString []byte) (map[string][]byte, error) {
 	awsSecretMap := make(map[string]interface{})
 
 	if err := json.Unmarshal(secretString, &awsSecretMap); err != nil {
