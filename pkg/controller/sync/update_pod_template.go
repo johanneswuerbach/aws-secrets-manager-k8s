@@ -69,14 +69,14 @@ func getReferencesToSecret(podTemplateSpec *corev1.PodTemplateSpec, secretName s
 
 func maybeUpdatePodTemplate(podTemplateSpec *corev1.PodTemplateSpec, updatedSecret hashedSecretRef) (changed bool) {
 	refsToSecret := getReferencesToSecret(podTemplateSpec, updatedSecret.name)
-
-	if len(refsToSecret) == 0 {
-		return false
-	}
+	changed = false
 
 	for _, ref := range refsToSecret {
-		*ref = updatedSecret.hashedName
+		if *ref != updatedSecret.hashedName {
+			*ref = updatedSecret.hashedName
+			changed = true
+		}
 	}
 
-	return true
+	return changed
 }
