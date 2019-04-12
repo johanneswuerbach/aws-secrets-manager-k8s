@@ -17,64 +17,66 @@ package sync
 
 import corev1 "k8s.io/api/core/v1"
 
-func shouldUpdate(value string, updatedSecret hashedSecretRef) bool {
+func secretHasName(value string, secretName string) bool {
 	matches := secretNameRegexp.FindStringSubmatch(value)
-	if len(matches) == 3 && matches[1] == updatedSecret.name {
+	if len(matches) == 3 && matches[1] == secretName {
 		return true
 	}
 
 	return false
 }
 
-func maybeUpdatePodTemplate(podTemplateSpec *corev1.PodTemplateSpec, updatedSecret hashedSecretRef) bool {
+func getReferencesToSecret(podTemplateSpec *corev1.PodTemplateSpec, secretName string) []*string {
 	pod := podTemplateSpec.Spec
-	podSpecChanged := false
+	var refs []*string
 
 	allPodContainers := append(pod.InitContainers, pod.Containers...)
+
 	for _, container := range allPodContainers {
-		if maybeUpdateContainer(container, updatedSecret) {
-			podSpecChanged = true
+		for _, e := range container.Env {
+			if e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil {
+				continue
+			}
+
+			if secretHasName(e.ValueFrom.SecretKeyRef.LocalObjectReference.Name, secretName) {
+				refs = append(refs, &(e.ValueFrom.SecretKeyRef.LocalObjectReference.Name))
+			}
+		}
+
+		for _, e := range container.EnvFrom {
+			if e.SecretRef == nil {
+				continue
+			}
+
+			if secretHasName(e.SecretRef.LocalObjectReference.Name, secretName) {
+				refs = append(refs, &(e.SecretRef.LocalObjectReference.Name))
+			}
 		}
 	}
 
-	for _, vol := range pod.Volumes {
-		if vol.VolumeSource.Secret == nil {
+	for _, volume := range pod.Volumes {
+		if volume.VolumeSource.Secret == nil {
 			continue
 		}
 
-		if shouldUpdate(vol.VolumeSource.Secret.SecretName, updatedSecret) {
-			vol.VolumeSource.Secret.SecretName = updatedSecret.hashedName
-			podSpecChanged = true
+		if secretHasName(volume.VolumeSource.Secret.SecretName, secretName) {
+			refs = append(refs, &volume.VolumeSource.Secret.SecretName)
 		}
 	}
 
-	return podSpecChanged
+	return refs
 }
 
-func maybeUpdateContainer(container corev1.Container, updatedSecret hashedSecretRef) bool {
-	containerChanged := false
+func maybeUpdatePodTemplate(podTemplateSpec *corev1.PodTemplateSpec, updatedSecret hashedSecretRef) (changed bool) {
+	refsToSecret := getReferencesToSecret(podTemplateSpec, updatedSecret.name)
+	changed = false
 
-	for _, e := range container.Env {
-		if e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil {
-			continue
-		}
-
-		if shouldUpdate(e.ValueFrom.SecretKeyRef.LocalObjectReference.Name, updatedSecret) {
-			e.ValueFrom.SecretKeyRef.LocalObjectReference.Name = updatedSecret.hashedName
-			containerChanged = true
+	for _, ref := range refsToSecret {
+		if *ref != updatedSecret.hashedName {
+			*ref = updatedSecret.hashedName
+			changed = true
 		}
 	}
 
-	for _, e := range container.EnvFrom {
-		if e.SecretRef == nil {
-			continue
-		}
-
-		if shouldUpdate(e.SecretRef.LocalObjectReference.Name, updatedSecret) {
-			e.SecretRef.LocalObjectReference.Name = updatedSecret.hashedName
-			containerChanged = true
-		}
-	}
-
-	return containerChanged
+	return changed
 }
